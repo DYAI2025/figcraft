@@ -1,0 +1,34 @@
+#!/bin/zsh
+# Start the FigCraft desktop app with its loopback control channel, so the
+# `figcraft-app` MCP server (figcraft-cli mcp --attach $PORT) can drive it live.
+# Usage: figcraft-open [FILE.figcraft ...]   (port: FIGCRAFT_CONTROL_PORT, default 7979)
+set -u
+PORT=${FIGCRAFT_CONTROL_PORT:-7979}
+APP=/Applications/FigCraft.app
+
+if /usr/sbin/lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "figcraft-open: control channel already listening on 127.0.0.1:$PORT" >&2
+  if (( $# > 0 )); then
+    echo "figcraft-open: open files through the MCP (open_file) instead; not restarting the app" >&2
+  fi
+  exit 0
+fi
+
+if /usr/bin/pgrep -xq FigCraft; then
+  echo "figcraft-open: FigCraft is running WITHOUT --control $PORT; quit it first, then rerun" >&2
+  exit 1
+fi
+
+files=()
+for f in "$@"; do files+=("${f:A}"); done
+/usr/bin/open -a "$APP" --args --control "$PORT" "${files[@]}"
+
+for _ in {1..40}; do
+  if /usr/sbin/lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "figcraft-open: FigCraft listening on 127.0.0.1:$PORT"
+    exit 0
+  fi
+  sleep 0.25
+done
+echo "figcraft-open: FigCraft started but control channel on :$PORT did not come up within 10 s" >&2
+exit 1
