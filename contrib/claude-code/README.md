@@ -1,8 +1,10 @@
-# FigCraft with Claude Code (macOS)
+# FigCraft with Claude Code and other agents
 
 Setup for using FigCraft as the default wireframe and design tool from Claude Code in every
 project: the signed release installed once, both MCP backends registered at user scope, and a
 launcher that starts the app with its control channel so an agent can edit the open file live.
+Sections 5 and 6 add a Linux host that other agents (Codex, GPT-based agents) drive over SSH, and a
+collaboration server for one shared live file.
 
 Verified on macOS (Apple Silicon) with FigCraft v0.11.2 and Claude Code, 2026-10-25.
 
@@ -98,3 +100,109 @@ FigCraft is the preferred tool for wireframes and design work in every project. 
 
 Computer use also works on the app (native window) for gestures the commands don't cover, but the
 MCP is faster and exact: every menu item and tool is one of 400+ commands (`list_commands`).
+
+## 5. Other agents: headless MCP on a Linux host over SSH
+
+FigCraft's MCP speaks stdio only. Any MCP client that can start a command (Claude Code, Codex,
+other GPT-based agents) reaches a Linux host by starting `figcraft-cli mcp` there through `ssh`:
+the SSH session is the transport, nothing listens on the network, and SSH keys are the
+authentication.
+
+Verified on Arch Linux x86_64 with v0.11.2, 2026-10-26: `initialize` (server `figcraft`
+0.11.2, protocol `2025-06-18`), `tools/list` (18 tools), a frame with text and a rectangle built,
+exported as a 720×400 PNG and saved as `.figcraft` inside the design folder, and an export to a path
+outside it refused (`automation path rejected: … is outside the folders that may be written`).
+
+### Install on the host
+
+Use the tarball (no package manager footprint), check it against `SHA256SUMS.txt`, and keep a
+versionless path for the MCP configs:
+
+```sh
+V=0.11.2
+D=~/.cache/figcraft-dl/$V; mkdir -p "$D" && cd "$D"
+B=https://github.com/storytold/figcraft/releases/download/v$V
+for f in SHA256SUMS.txt figcraft-$V-linux-x86_64.tar.gz; do curl -fsSLO "$B/$f"; done
+grep "  figcraft-$V-linux-x86_64.tar.gz$" SHA256SUMS.txt | sha256sum -c -
+
+O=~/.local/opt/figcraft
+mkdir -p "$O/releases/$V" ~/.local/bin ~/design/figcraft
+tar xzf figcraft-$V-linux-x86_64.tar.gz -C "$O/releases/$V" --strip-components=1
+ln -sfn "releases/$V" "$O/current"
+ln -sfn ../opt/figcraft/current/bin/figcraft-cli ~/.local/bin/figcraft-cli
+figcraft-cli --version
+```
+
+Updating is the same with the new version; `current` moves, the MCP configs stay. Use
+`linux-aarch64` on ARM hosts (`uname -m`).
+
+### Register it in a client
+
+Always pass the automation roots: the headless server otherwise reads and writes anything the SSH
+user can. Use absolute paths (a non-interactive SSH command gets no login `PATH`), and a host alias
+that logs in without prompts (`BatchMode`; key without passphrase or loaded in an agent).
+
+```sh
+# Claude Code (any machine with the alias `arch` in ~/.ssh/config)
+claude mcp add -s user figcraft-arch -- ssh -T -o BatchMode=yes arch \
+  /home/ben/.local/bin/figcraft-cli mcp \
+  --automation-read-root /home/ben/design/figcraft --automation-write-root /home/ben/design/figcraft
+```
+
+```toml
+# Codex (~/.codex/config.toml)
+[mcp_servers.figcraft-arch]
+command = "ssh"
+args = ["-T", "-o", "BatchMode=yes", "arch", "/home/ben/.local/bin/figcraft-cli", "mcp",
+        "--automation-read-root", "/home/ben/design/figcraft",
+        "--automation-write-root", "/home/ben/design/figcraft"]
+```
+
+```json
+{ "mcpServers": { "figcraft-arch": { "command": "ssh", "args": ["-T", "-o", "BatchMode=yes", "arch",
+  "/home/ben/.local/bin/figcraft-cli", "mcp",
+  "--automation-read-root", "/home/ben/design/figcraft",
+  "--automation-write-root", "/home/ben/design/figcraft"] } } }
+```
+
+An agent running on the host itself drops the `ssh … arch` part. The server's stderr names the
+roots it enforces (`file access confined to {"read":[…],"write":[…]}`); check it once.
+
+Each SSH session is its own headless document: work that should outlive the session goes into a
+`.figcraft` file with `save_file` (inside the write root), or into a shared file on a collaboration
+server (next section). When SSH runs through a `cloudflared access ssh` ProxyCommand, the Access
+token expires and the next start needs a browser login; agents without a browser then fail to
+connect, so prefer a LAN or tailnet alias for unattended agents.
+
+## 6. One live file for the app, the browser build and agents
+
+`figcraft-server` (see [`docs/server.md`](../../docs/server.md)) keeps a file on a server that
+the desktop app, the browser build and headless agents edit together. For a personal server there is
+no need to expose it: run it on the host's loopback (`127.0.0.1:47900`, the default, with
+`open_publish` off so only the server key publishes) and forward the port wherever a client runs:
+
+```sh
+ssh -N -L 47900:127.0.0.1:47900 arch      # keep running while you work
+curl -fs http://127.0.0.1:47900/healthz   # 200 ok through the tunnel
+```
+
+Links name the server as it listens, e.g. the edit link
+`figcraft://join?host=127.0.0.1:47900&file=<id>&token=<token>`, which is correct on every client
+that forwards the same local port. On the host, the server key comes from
+`figcraft-server --data <data dir> key` (run as the server's user); give it only to whoever may
+publish. Then:
+
+- **Desktop app:** File ▸ Publish to server…, address `ws://127.0.0.1:47900/?key=<key>`; share the
+  edit link or a join code.
+- **Agents (MCP):** `run_command collab.publish {"server": "ws://127.0.0.1:47900/?key=<key>", "name": "…"}`
+  publishes the open document; `run_command collab.peers` then has `status: "live"` and the edit link
+  in `published.edit`. Anyone else runs `run_command collab.join {"link": "<edit link>"}` (or
+  `{"code": "…"}`) and edits the same file live.
+
+Verified 2026-10-26 with the server on the Arch host (systemd, `127.0.0.1:47900` only): an agent on
+the host published a frame; a headless agent on the Mac joined through the SSH tunnel (`status: live`,
+`access: edit`), saw the frame and added a layer; a new session on the host joined the same link and
+saw both layers. `/healthz` answered `200 ok` on the host and through the tunnel.
+
+The upstream `figcraft-server.service` in the release archive is a hardened systemd unit for this;
+keep its `IPAddressAllow=localhost` / `IPAddressDeny=any` lines when the server stays on loopback.
