@@ -186,15 +186,23 @@ ssh -N -L 47900:127.0.0.1:47900 arch      # keep running while you work
 curl -fs http://127.0.0.1:47900/healthz   # 200 ok through the tunnel
 ```
 
-Links the server prints name `ws://127.0.0.1:47900/…`, which is correct on every client that
-forwards the same local port. On the host, the server key comes from
+Links name the server as it listens, e.g. the edit link
+`figcraft://join?host=127.0.0.1:47900&file=<id>&token=<token>`, which is correct on every client
+that forwards the same local port. On the host, the server key comes from
 `figcraft-server --data <data dir> key` (run as the server's user); give it only to whoever may
 publish. Then:
 
 - **Desktop app:** File ▸ Publish to server…, address `ws://127.0.0.1:47900/?key=<key>`; share the
   edit link or a join code.
-- **Agents (MCP):** `run_command collab.join {"link": "<edit link>"}` (or `{"code": "…"}`) joins the
-  same file; every change shows up live in the app.
+- **Agents (MCP):** `run_command collab.publish {"server": "ws://127.0.0.1:47900/?key=<key>", "name": "…"}`
+  publishes the open document; `run_command collab.peers` then has `status: "live"` and the edit link
+  in `published.edit`. Anyone else runs `run_command collab.join {"link": "<edit link>"}` (or
+  `{"code": "…"}`) and edits the same file live.
+
+Verified 2026-10-26 with the server on the Arch host (systemd, `127.0.0.1:47900` only): an agent on
+the host published a frame; a headless agent on the Mac joined through the SSH tunnel (`status: live`,
+`access: edit`), saw the frame and added a layer; a new session on the host joined the same link and
+saw both layers. `/healthz` answered `200 ok` on the host and through the tunnel.
 
 The upstream `figcraft-server.service` in the release archive is a hardened systemd unit for this;
 keep its `IPAddressAllow=localhost` / `IPAddressDeny=any` lines when the server stays on loopback.
